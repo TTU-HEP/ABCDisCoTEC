@@ -41,7 +41,7 @@ def plot_training(history, key, title, filename):
     plt.savefig(filename)
     plt.close()
 
-def plot_signal_background(scores, labels, weights, dnn0="dnn_0_out", dnn1="dnn_1_out", outdir="plots"):
+def plot_signal_background(scores, labels, weights, dnn0="dnn_0_out", dnn1="dnn_1_out", outdir="plots", extraName=""):
     os.makedirs(outdir, exist_ok=True)
     for class_label, title in zip([0, 1], ["Background", "Signal"]):
         fig, ax = plt.subplots(figsize=(6, 6))
@@ -61,7 +61,7 @@ def plot_signal_background(scores, labels, weights, dnn0="dnn_0_out", dnn1="dnn_
         ax.text(0.5, 0.9, title, transform=ax.transAxes, fontsize=14, weight="bold",
                 ha="center", bbox=dict(facecolor="white", edgecolor="gray", boxstyle="round,pad=0.5"))
         plt.tight_layout()
-        fig.savefig(os.path.join(outdir, f"heatmap_{title.lower()}.pdf"))
+        fig.savefig(os.path.join(outdir, f"heatmap_{title.lower()}_{extraName}.pdf"))
         plt.close()
 
     # Loop over DNN outputs (e.g. dnn0 and dnn1)
@@ -92,7 +92,7 @@ def plot_signal_background(scores, labels, weights, dnn0="dnn_0_out", dnn1="dnn_
         ax.set_xlim(0, 1)
         
         plt.tight_layout()
-        fig.savefig(os.path.join(outdir, f"{dnn_name}_overlay.pdf"))
+        fig.savefig(os.path.join(outdir, f"{dnn_name}_overlay{extraName}.pdf"))
         plt.close()
 
     for dnn_idx, dnn_name in enumerate(["dnn_0_out", "dnn_1_out"]):
@@ -116,7 +116,7 @@ def plot_signal_background(scores, labels, weights, dnn0="dnn_0_out", dnn1="dnn_
         ax.legend(loc="lower right", fontsize=12)
         
         plt.tight_layout()
-        fig.savefig(os.path.join(outdir, f"ROC_{dnn_name}.pdf"))
+        fig.savefig(os.path.join(outdir, f"ROC_{dnn_name}_{extraName}.pdf"))
         plt.close()
         
 def train_with_lambdas(disco_lambda, closure_lambda):
@@ -130,11 +130,12 @@ def train_with_lambdas(disco_lambda, closure_lambda):
     experiment.set_name(f"dl={disco_lambda}_cl={closure_lambda}")
 
     branches = [f"var{i}" for i in range(10)]
-    constraint_obs = ["var0"]
+    #constraint_obs = ["var0"]
+    constraint_obs = []
     training_vars = branches[1:]
 
-    qcd = uproot.open("test_data5/background_data.root")["Events"].arrays(branches, library="pd")
-    signal = uproot.open("test_data5/signal_data.root")["Events"].arrays(branches, library="pd")
+    qcd = uproot.open("background_data.root")["Events"].arrays(branches, library="pd")
+    signal = uproot.open("signal_data.root")["Events"].arrays(branches, library="pd")
     qcd["weights"] = 1.0
     signal["weights"] = 1.0
 
@@ -172,10 +173,13 @@ def train_with_lambdas(disco_lambda, closure_lambda):
     )
 
     constraints = [
-        abcdiscotec.DiscoConstraintLambda("dnn_0", "dnn_1", lambda_weight=disco_lambda),
-        abcdiscotec.DiscoConstraintMDMM("var0", "dnn_0", type="max", target=0.1, scale=0.1, damping=0),
-        abcdiscotec.DiscoConstraintMDMM("var0", "dnn_1", type="max", target=0.1, scale=0.1, damping=0),
-        abcdiscotec.ClosureConstraintMDMM("dnn_0", "dnn_1", n_events_min=10, type="max", target=closure_lambda, symmetrize=True, damping=5),
+        #abcdiscotec.DiscoConstraintLambda("dnn_0", "dnn_1", lambda_weight=disco_lambda),
+        #abcdiscotec.ClosureConstraintLambda("dnn_0", "dnn_1", n_events_min=10, lambda_weight=closure_lambda),
+        
+        abcdiscotec.DiscoConstraintMDMM("dnn_0", "dnn_1", type="max", target=disco_lambda, scale=1.0, damping=1.0),
+        abcdiscotec.ClosureConstraintMDMM("dnn_0", "dnn_1", n_events_min=10, type="max", target=closure_lambda, symmetrize=True, scale=1.0, damping=1.0),
+        #abcdiscotec.DiscoConstraintMDMM("var0", "dnn_0", type="max", target=0.1, scale=0.1, damping=0),
+        #abcdiscotec.DiscoConstraintMDMM("var0", "dnn_1", type="max", target=0.1, scale=0.1, damping=0),
     ]
 
     constraint_manager = abcdiscotec.make_constraint_manager(
@@ -200,14 +204,14 @@ def train_with_lambdas(disco_lambda, closure_lambda):
         optimizer=optimizer,
         constraint_manager=constraint_manager,
         mdmm_module=mdmm_module,
-        n_epochs=10,
+        n_epochs=100,
         comet_experiment=experiment,
     )
 
     abcdiscotec.save_checkpoint(f"checkpoint_dl{disco_lambda}_cl{closure_lambda}", model, mdmm_module, optimizer, history=history)
-    plot_training(history, ["bce_0", "bce_1"], "BCE Loss", f"loss_dl{disco_lambda}_cl{closure_lambda}.pdf")
-    plot_training(history, constraint_manager.get_lambda_constraint_names(), "Lambda Constraints", f"lambda_dl{disco_lambda}_cl{closure_lambda}.pdf")
-    plot_training(history, constraint_manager.get_mdmm_constraint_names(), "MDMM Constraints", f"mdmm_dl{disco_lambda}_cl{closure_lambda}.pdf")
+    plot_training(history, ["bce_0", "bce_1", "val_bce0", "val_bce1"], "BCE Loss", f"plots/loss_dl{disco_lambda}_cl{closure_lambda}.pdf")
+    plot_training(history, constraint_manager.get_lambda_constraint_names(), "Lambda Constraints", f"plots/lambda_dl{disco_lambda}_cl{closure_lambda}.pdf")
+    plot_training(history, constraint_manager.get_mdmm_constraint_names(), "MDMM Constraints", f"plots/mdmm_dl{disco_lambda}_cl{closure_lambda}.pdf")
 
     val_scores = abcdiscotec.evaluate_model(model, device=device, test_data=X_val)
     p0 = torch.clamp(val_scores["dnn_0_out"], 1e-3, 1 - 1e-3).numpy()
@@ -219,12 +223,12 @@ def train_with_lambdas(disco_lambda, closure_lambda):
     print(f"Manual Validation BCE dnn_1: {val_bce1:.4f}")
 
     scores = abcdiscotec.evaluate_model(model, device=device, test_data=X_test)
-    plot_signal_background(scores, y_test, w_test)
+    plot_signal_background(scores, y_test, w_test, extraName=f"dl{disco_lambda}_cl{closure_lambda}")
 
     return {
         "disco_lambda": disco_lambda,
         "closure_lambda": closure_lambda,
-        #"final_loss": history["loss"][-1],
+        "final_loss": history["loss"][-1] if "loss" in history else None,
         "accuracy": history["accuracy"][-1] if "accuracy" in history else None
     }
 
@@ -232,7 +236,7 @@ if __name__ == "__main__":
     import itertools
     from multiprocessing import Pool
 
-    disco_lambdas = [0.001]
+    disco_lambdas   = [0.01]
     closure_lambdas = [0.01]
     param_grid = list(itertools.product(disco_lambdas, closure_lambdas))
 

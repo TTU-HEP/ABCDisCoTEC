@@ -4,6 +4,7 @@ import uproot
 import awkward as ak
 import matplotlib.pyplot as plt
 import seaborn as sns
+import os
 from sklearn.preprocessing import MinMaxScaler
 
 def generate_gaussian_data(n_samples, mean, cov, label):
@@ -17,12 +18,12 @@ def generate_gaussian_data(n_samples, mean, cov, label):
 num_vars = 10
 num_samples = 100000
 
-# Define means for signal and background
-mean_signal = np.linspace(0, 5, num_vars)
-mean_background = np.linspace(5, 10, num_vars)
+base_means = np.random.uniform(0, 5, size=num_vars)
+offset = np.random.uniform(-2.0, 2.0, size=num_vars)  # adjust spread as needed
+mean_background = base_means
+mean_signal = base_means + offset
 
 # Create fully correlated covariance matrix with all correlations >= 0.5
-
 def create_fully_correlated_cov(num_vars, base_corr=0.5, random_strength=0.2, seed=None):
     if seed is not None:
         np.random.seed(seed)
@@ -38,8 +39,8 @@ def create_fully_correlated_cov(num_vars, base_corr=0.5, random_strength=0.2, se
     return cov_matrix
 
 # Use fully correlated covariance matrices for both signal and background
-cov_signal = create_fully_correlated_cov(num_vars, seed=42)
-cov_background = create_fully_correlated_cov(num_vars, seed=24)
+cov_signal = create_fully_correlated_cov(num_vars, 0.5, 0.2, seed=42)
+cov_background = create_fully_correlated_cov(num_vars, 0.5, 0.4, seed=24)
 
 signal_data = generate_gaussian_data(num_samples, mean_signal, cov_signal, label=1)
 background_data = generate_gaussian_data(num_samples, mean_background, cov_background, label=0)
@@ -49,10 +50,11 @@ df_signal = pd.DataFrame(signal_data)
 df_background = pd.DataFrame(background_data)
 
 # Scale data to [-1, 1] separately
-scaler = MinMaxScaler(feature_range=(-1, 1))
-features = [col for col in df_signal.columns if col != "label"]
-df_signal[features] = scaler.fit_transform(df_signal[features])
-df_background[features] = scaler.fit_transform(df_background[features])
+df_combined = pd.concat([df_signal, df_background], axis=0)
+means = df_combined.mean()
+stds = df_combined.std()
+df_signal = (df_signal - means) / stds
+df_background = (df_background - means) / stds
 
 # Save to separate ROOT files
 with uproot.recreate("signal_data.root") as file_signal:
@@ -61,6 +63,10 @@ with uproot.recreate("signal_data.root") as file_signal:
 with uproot.recreate("background_data.root") as file_background:
     file_background["Events"] = {col: ak.from_numpy(df_background[col].values) for col in df_background.columns}
 
+# Create output directory for plots
+plot_dir = "input_var_plots"
+os.makedirs(plot_dir, exist_ok=True)
+    
 # Plot correlation matrix for signal data
 corr_signal = df_signal.drop(columns="label").corr()
 sns.set(font_scale=1.1)
@@ -77,7 +83,7 @@ sns.heatmap(
 )
 plt.title("Correlation Matrix of Signal Input Variables")
 plt.tight_layout()
-plt.savefig("correlation_heatmap_signal.png")
+plt.savefig(plot_dir+"/correlation_heatmap_signal.png")
 plt.close()
 
 # Plot correlation matrix for background data
@@ -95,9 +101,43 @@ sns.heatmap(
 )
 plt.title("Correlation Matrix of Background Input Variables")
 plt.tight_layout()
-plt.savefig("correlation_heatmap_background.png")
+plt.savefig(plot_dir+"/correlation_heatmap_background.png")
 plt.close()
 
 print("Signal and background data saved to signal_data.root and background_data.root.")
 print("Signal correlation heatmap saved as correlation_heatmap_signal.png.")
 print("Background correlation heatmap saved as correlation_heatmap_background.png.")
+
+
+# Loop over all shared variables in both dataframes
+common_vars = set(df_signal.columns).intersection(df_background.columns)
+
+for var in sorted(common_vars):
+    sig_values = df_signal[var].to_numpy()
+    bkg_values = df_background[var].to_numpy()
+
+    # Clean data (drop NaN, inf)
+    sig_values = sig_values[np.isfinite(sig_values)]
+    bkg_values = bkg_values[np.isfinite(bkg_values)]
+
+    # Skip non-numeric or empty
+    if sig_values.size == 0 or bkg_values.size == 0:
+        continue
+
+    # Plot histogram
+    fig, ax = plt.subplots(figsize=(6, 5))
+    bins = 50
+
+    ax.hist(bkg_values, bins=bins, density=True, alpha=0.6, label="Background", color="blue", histtype='stepfilled')
+    ax.hist(sig_values, bins=bins, density=True, alpha=0.6, label="Signal", color="red", histtype='stepfilled')
+
+    ax.set_title(f"{var} Distribution")
+    ax.set_xlabel(var)
+    ax.set_ylabel("Normalized Entries")
+    ax.legend()
+    plt.tight_layout()
+
+    # Save plot
+    fig.savefig(os.path.join(plot_dir, f"{var}_hist.png"))
+    plt.close()
+
