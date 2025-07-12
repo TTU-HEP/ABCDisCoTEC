@@ -10,37 +10,47 @@ import abcdiscotec
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-experiment = Experiment(
-    "kpzBaCBjY8CnZbwLdTVTrJVXf",
-    project_name="abcdiscotec",
-    workspace="rseidita",
-)
+# Example comet_ml experiment
+# Uncomment the following lines to enable comet_ml tracking
+# Note: Make sure to set your own API key and project details
+experiment = None
+# experiment = Experiment(
+#     "kpzBaCBjY8CnZbwLdTVTrJVXf",
+#     project_name="abcdiscotec",
+#     workspace="rseidita",
+# )
 
-qcd = "test_data/background_dataset.root"
-signal = "test_data/svjl_mMed-3000GeV_mDark-8GeV_rinv-0.5_dataset.root"
+qcd = "test_data/background_data.root"
+signal = "test_data/signal_data.root"
 
 branches_to_load = [
-    "MET_significance",
-    "MET_phi",
-    "DeltaEtaJ0J1FatJet",
-    "nElectron_miniPFRelIso_all",
-    "nMuon_miniPFRelIso_all",
-    "RTFatJet",
-    "DeltaPhiMinFatJetMET",
+    "var0",
+    "var1",
+    "var2",
+    "var3",
+    "var4",
+    "var5",
+    "var6",
+    "var7",
+    "var8",
+    "var9",
+    "label",
     "weights",
-    "MET_pt",
 ]
 
-constraint_observables = ["MET_pt"]
+constraint_observables = ["var0"]
 
-training_variables = [
-    "MET_significance",
-    "MET_phi",
-    "DeltaEtaJ0J1FatJet",
-    "nElectron_miniPFRelIso_all",
-    "nMuon_miniPFRelIso_all",
-    "RTFatJet",
-    "DeltaPhiMinFatJetMET",
+training_variables = [    
+    "var0",
+    "var1",
+    "var2",
+    "var3",
+    "var4",
+    "var5",
+    "var6",
+    "var7",
+    "var8",
+    "var9",
 ]
 
 qcd_file = uproot.open(qcd)
@@ -117,27 +127,27 @@ data_train_constraint = data_train_constraint.sample(frac=1, random_state=42)
 # Define the model
 model = abcdiscotec.make_abcdiscotec_model(
     input_size=len(training_variables),
-    architecture=[32, 16, 8, 4],
+    architecture=[50],
     use_batchnorm=True,
     flavor="single",
 )
 
-# Define the constraints. Here we are enforcing a decorrelation between the DNN output and the MET_pt variable,
-# and closure of the ABCD plane defined by the network and MET_pt
+# Define the constraints. Here we are enforcing a decorrelation between the DNN output and a external observable variable,
+# and closure of the ABCD plane defined by the network and the external observable variable.
 constraints = [
     abcdiscotec.DiscoConstraintLambda(
         obs_name_1="dnn_0",
-        obs_name_2="MET_pt",
-        lambda_weight=0.1,
+        obs_name_2="var0",
+        lambda_weight=0.05,
     ),
     abcdiscotec.ClosureConstraintMDMM(
         obs_name_1="dnn_0",
-        obs_name_2="MET_pt",
+        obs_name_2="var0",
         n_events_min=10,
         type="max",
-        target=0.1,
+        target=0.01235, # Corresponds to ~10% non-closure
         symmetrize=True,
-        damping=20,
+        damping=1,
     ),
 ]
 
@@ -160,7 +170,7 @@ training_dataloader = abcdiscotec.get_dataloader(
     constraint_data=torch.tensor(data_train_constraint.values).float(),
     labels=torch.tensor(data_train["label"].values).float(),
     weights=torch.tensor(data_train["weights"].values).float(),
-    batch_size=4196,
+    batch_size=8192,
     use_sampler=True,
 )
 
@@ -169,20 +179,20 @@ validation_dataloader = abcdiscotec.get_dataloader(
     constraint_data=torch.tensor(data_val_constraint.values).float(),
     labels=torch.tensor(data_val["label"].values).float(),
     weights=torch.tensor(data_val["weights"].values).float(),
-    batch_size=4196,
+    batch_size=8192,
     use_sampler=True,
 )
 
 # Train the model
 model, history = abcdiscotec.train_model(
     model=model,
-    device=torch.device("cpu"),
+    device=device,
     training_dataloader=training_dataloader,
     validation_dataloader=validation_dataloader,
     optimizer=optimizer,
     constraint_manager=constraint_manager,
     mdmm_module=mdmm_module,
-    n_epochs=10,
+    n_epochs=1,
     comet_experiment=experiment,
 )
 
@@ -221,35 +231,35 @@ plt.close()
 # Evaluate the model
 scores = abcdiscotec.evaluate_model(
     model=model,
-    device=torch.device("cpu"),
+    device=device,
     test_data=torch.tensor(data_test[training_variables].values).float(),
 )
 
 # Plot the ABCD plane
 plt.hist2d(
     scores["dnn_0_out"][(data_test["label"] == 0).values][:,0],
-    data_test_constraint["MET_pt"][(data_test["label"] == 0).values],
+    data_test_constraint["var0"][(data_test["label"] == 0).values],
     bins=100,
-    range=[[0, 1], [0, 1200]],
+    range=[[0, 1], [-5, 5]],
     weights=data_test["weights"][(data_test["label"] == 0).values],
     norm=matplotlib.colors.LogNorm(),
     cmap="viridis",
 )
 plt.xlabel("DNN 0 output")
-plt.ylabel("MET")
+plt.ylabel("var0")
 
 plt.savefig("abcd_plane_bkg.pdf")
 plt.clf()
 plt.close()
 plt.hist2d(
     scores["dnn_0_out"][(data_test["label"] == 1).values][:,0],
-    data_test_constraint["MET_pt"][(data_test["label"] == 1).values],
+    data_test_constraint["var0"][(data_test["label"] == 1).values],
     bins=100,
-    range=[[0, 1], [0, 1200]],
+    range=[[0, 1], [-5, 5]],
     weights=data_test["weights"][(data_test["label"] == 1).values],
     norm=matplotlib.colors.LogNorm(),
     cmap="coolwarm",
 )
 plt.xlabel("DNN 0 output")
-plt.ylabel("MET")
+plt.ylabel("var0")
 plt.savefig("abcd_plane_signal.pdf")

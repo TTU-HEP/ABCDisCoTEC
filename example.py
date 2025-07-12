@@ -10,22 +10,48 @@ import abcdiscotec
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-experiment = Experiment(
-    "kpzBaCBjY8CnZbwLdTVTrJVXf",
-    project_name="abcdiscotec",
-    workspace="rseidita",
-)
+# Example comet_ml experiment
+# Uncomment the following lines to enable comet_ml tracking
+# Note: Make sure to set your own API key and project details
+experiment = None
+# experiment = Experiment(
+#     "kpzBaCBjY8CnZbwLdTVTrJVXf",
+#     project_name="abcdiscotec",
+#     workspace="rseidita",
+# )
 
-qcd = "test_data5/background_data.root"
-signal = "test_data5/signal_data.root"
+qcd = "test_data/background_data.root"
+signal = "test_data/signal_data.root"
 
 branches_to_load = [
-    "var0", "var1", "var2", "var3", "var4", "var5", "var6", "var7", "var8", "var9"
+    "var0",
+    "var1",
+    "var2",
+    "var3",
+    "var4",
+    "var5",
+    "var6",
+    "var7",
+    "var8",
+    "var9",
+    "label",
+    "weights",
 ]
 
 constraint_observables = ["var0"]
 
-training_variables = branches_to_load[1:]
+training_variables = [    
+    "var0",
+    "var1",
+    "var2",
+    "var3",
+    "var4",
+    "var5",
+    "var6",
+    "var7",
+    "var8",
+    "var9",
+]
 
 qcd_file = uproot.open(qcd)
 signal_file = uproot.open(signal)
@@ -56,15 +82,12 @@ signal_data_test_constraint = signal_data_test[constraint_observables]
 signal_data_val_constraint = signal_data_val[constraint_observables]
 
 # Extract the weights
-qcd_data_train_weights = qcd_data_train["var9"]
-qcd_data_test_weights = qcd_data_test["var9"]
-qcd_data_val_weights = qcd_data_val["var9"]
-signal_data_train_weights = signal_data_train["var9"]
-signal_data_test_weights = signal_data_test["var9"]
-signal_data_val_weights = signal_data_val["var9"]
-
-data_train = pd.concat([qcd_data_train, signal_data_train])
-data_train.to_csv("processed_data.csv", index=False) # Save processed data for histogram plots("processed_data.csv", index=False) # Save processed data for histogram plots
+qcd_data_train_weights = qcd_data_train["weights"]
+qcd_data_test_weights = qcd_data_test["weights"]
+qcd_data_val_weights = qcd_data_val["weights"]
+signal_data_train_weights = signal_data_train["weights"]
+signal_data_test_weights = signal_data_test["weights"]
+signal_data_val_weights = signal_data_val["weights"]
 
 # Only keep the training variables
 qcd_data_train = qcd_data_train[training_variables]
@@ -74,4 +97,187 @@ signal_data_train = signal_data_train[training_variables]
 signal_data_test = signal_data_test[training_variables]
 signal_data_val = signal_data_val[training_variables]
 
-print("Branch names updated to use var0-var9.")
+# Normalize the data
+from sklearn.preprocessing import StandardScaler
+
+scaler = StandardScaler()
+data_train = pd.concat([qcd_data_train, signal_data_train])
+columns = data_train.columns
+data_train = pd.DataFrame(scaler.fit_transform(data_train), columns=columns)
+data_train["label"] = np.concatenate([np.zeros(len(qcd_data_train)), np.ones(len(signal_data_train))])
+data_train["weights"] = np.concatenate([qcd_data_train_weights / qcd_data_train_weights.sum(), signal_data_train_weights / signal_data_train_weights.sum()])
+data_train_constraint = pd.concat([qcd_data_train_constraint, signal_data_train_constraint])
+
+data_test = pd.concat([qcd_data_test, signal_data_test])
+data_test = pd.DataFrame(scaler.transform(data_test), columns=columns)
+data_test["label"] = np.concatenate([np.zeros(len(qcd_data_test)), np.ones(len(signal_data_test))])
+data_test["weights"] = np.concatenate([qcd_data_test_weights, signal_data_test_weights])
+data_test_constraint = pd.concat([qcd_data_test_constraint, signal_data_test_constraint])
+
+data_val = pd.concat([qcd_data_val, signal_data_val])
+data_val = pd.DataFrame(scaler.transform(data_val), columns=columns)
+data_val["label"] = np.concatenate([np.zeros(len(qcd_data_val)), np.ones(len(signal_data_val))])
+data_val["weights"] = np.concatenate([qcd_data_val_weights/qcd_data_val_weights.sum(), signal_data_val_weights/signal_data_val_weights.sum()])
+data_val_constraint = pd.concat([qcd_data_val_constraint, signal_data_val_constraint])
+
+# Shuffle the data (not needed if using a sampler)
+data_train = data_train.sample(frac=1, random_state=42)
+data_train_constraint = data_train_constraint.sample(frac=1, random_state=42)
+
+# Define the model
+model = abcdiscotec.make_abcdiscotec_model(
+    input_size=len(training_variables),
+    architecture=[50],
+    use_batchnorm=True,
+    flavor="double",
+)
+
+# Define the constraints. Here we are enforcing decorrelation between the two neural networks,
+# closure of the ABCD plane defined by the pair of networks, and decorrelation with a third external observable.
+constraints = [
+    abcdiscotec.DiscoConstraintLambda(
+        obs_name_1="dnn_0",
+        obs_name_2="dnn_1",
+        lambda_weight=0.05,
+    ),
+    abcdiscotec.DiscoConstraintMDMM(
+        obs_name_1="var0",
+        obs_name_2="dnn_0",
+        type="max",
+        target=0.05,
+        scale=1.,
+        damping=1.,
+    ),
+    abcdiscotec.DiscoConstraintMDMM(
+        obs_name_1="var0",
+        obs_name_2="dnn_1",
+        type="max",
+        target=0.05,
+        scale=1.,
+        damping=1.,
+    ),
+    abcdiscotec.ClosureConstraintMDMM(
+        obs_name_1="dnn_0",
+        obs_name_2="dnn_1",
+        n_events_min=10,
+        type="max",
+        target=0.01235, # Corresponds to ~10% non-closure
+        symmetrize=True,
+        scale=1.,
+        damping=1,
+    ),
+]
+
+# Define the constraint manager
+constraint_manager = abcdiscotec.make_constraint_manager(
+    constraints=constraints,
+    extra_variables_for_constraints=constraint_observables,
+)
+
+# Get the optimizer and MDMM module
+optimizer, mdmm_module = abcdiscotec.get_optimizer_and_mdmm_module(
+    model=model,
+    learning_rate=1e-3,
+    constraint_manager=constraint_manager,
+)
+
+# Get the DataLoader
+training_dataloader = abcdiscotec.get_dataloader(
+    dnn_input_data=torch.tensor(data_train[training_variables].values).float(),
+    constraint_data=torch.tensor(data_train_constraint.values).float(),
+    labels=torch.tensor(data_train["label"].values).float(),
+    weights=torch.tensor(data_train["weights"].values).float(),
+    batch_size=8192,
+    use_sampler=True,
+)
+
+validation_dataloader = abcdiscotec.get_dataloader(
+    dnn_input_data=torch.tensor(data_val[training_variables].values).float(),
+    constraint_data=torch.tensor(data_val_constraint.values).float(),
+    labels=torch.tensor(data_val["label"].values).float(),
+    weights=torch.tensor(data_val["weights"].values).float(),
+    batch_size=8192,
+    use_sampler=True,
+)
+
+# Train the model
+model, history = abcdiscotec.train_model(
+    model=model,
+    device=device,
+    training_dataloader=training_dataloader,
+    validation_dataloader=validation_dataloader,
+    optimizer=optimizer,
+    constraint_manager=constraint_manager,
+    mdmm_module=mdmm_module,
+    n_epochs=20,
+    comet_experiment=experiment,
+)
+
+# Save the model
+abcdiscotec.save_checkpoint(
+    "checkpoint",
+    model,
+    mdmm_module,
+    optimizer,
+    history=history,
+)
+
+# Plot training history
+plt.plot(history["bce_0"])
+plt.plot(history["bce_1"])
+plt.xlabel("Epoch")
+plt.ylabel("BCE loss")
+plt.savefig("loss.pdf")
+plt.close()
+
+for constraint_name in constraint_manager.get_lambda_constraint_names():
+    plt.plot(history[constraint_name], label=constraint_name)
+plt.xlabel("Epoch")
+plt.ylabel("Constraint value")
+plt.legend()
+plt.savefig("lambda_constraints.pdf")
+plt.close()
+
+for constraint_name in constraint_manager.get_mdmm_constraint_names():
+    plt.plot(history[constraint_name], label=constraint_name)
+plt.xlabel("Epoch")
+plt.ylabel("Constraint value")
+plt.legend()
+plt.savefig("mdmm_constraints.pdf")
+plt.close()
+
+# Evaluate the model
+scores = abcdiscotec.evaluate_model(
+    model=model,
+    device=device,
+    test_data=torch.tensor(data_test[training_variables].values).float(),
+)
+
+# Plot the ABCD plane
+plt.hist2d(
+    scores["dnn_0_out"][(data_test["label"] == 0).values][:,0],
+    scores["dnn_1_out"][(data_test["label"] == 0).values][:,0],
+    bins=100,
+    range=[[0, 1], [0, 1]],
+    weights=data_test["weights"][(data_test["label"] == 0).values],
+    norm=matplotlib.colors.LogNorm(),
+    cmap="viridis",
+)
+plt.xlabel("DNN 0 output")
+plt.ylabel("DNN 1 output")
+
+plt.savefig("abcd_plane_bkg.pdf")
+plt.clf()
+plt.close()
+plt.hist2d(
+    scores["dnn_0_out"][(data_test["label"] == 1).values][:,0],
+    scores["dnn_1_out"][(data_test["label"] == 1).values][:,0],
+    bins=100,
+    range=[[0, 1], [0, 1]],
+    weights=data_test["weights"][(data_test["label"] == 1).values],
+    norm=matplotlib.colors.LogNorm(),
+    cmap="coolwarm",
+)
+plt.xlabel("DNN 0 output")
+plt.ylabel("DNN 1 output")
+plt.savefig("abcd_plane_signal.pdf")

@@ -16,7 +16,7 @@ def generate_gaussian_data(n_samples, mean, cov, label):
 
 # Number of variables and samples
 num_vars = 10
-num_samples = 100000
+num_samples = 500000
 
 base_means = np.random.uniform(0, 5, size=num_vars)
 offset = np.random.uniform(-2.0, 2.0, size=num_vars)  # adjust spread as needed
@@ -56,11 +56,19 @@ stds = df_combined.std()
 df_signal = (df_signal - means) / stds
 df_background = (df_background - means) / stds
 
+# Add weights
+df_signal['weights'] = 1.0
+df_background['weights'] = 1.0
+
 # Save to separate ROOT files
-with uproot.recreate("signal_data.root") as file_signal:
+# Create output directory for plots
+data_dir = "test_data"
+os.makedirs(data_dir, exist_ok=True)
+
+with uproot.recreate(f"{data_dir}/signal_data.root") as file_signal:
     file_signal["Events"] = {col: ak.from_numpy(df_signal[col].values) for col in df_signal.columns}
 
-with uproot.recreate("background_data.root") as file_background:
+with uproot.recreate(f"{data_dir}/background_data.root") as file_background:
     file_background["Events"] = {col: ak.from_numpy(df_background[col].values) for col in df_background.columns}
 
 # Create output directory for plots
@@ -140,4 +148,3 @@ for var in sorted(common_vars):
     # Save plot
     fig.savefig(os.path.join(plot_dir, f"{var}_hist.png"))
     plt.close()
-
